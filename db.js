@@ -11,7 +11,7 @@ const createPool = () => {
   if (!pool) {
     pool = mysql.createPool({
       host: process.env.DB_HOST,
-        port: process.env.DB_PORT, 
+      port: process.env.DB_PORT, 
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
@@ -19,9 +19,12 @@ const createPool = () => {
       connectionLimit: 10, 
       queueLimit: 0,
       enableKeepAlive: true,
-      keepAliveInitialDelay: 10000, // Mantener conexiones vivas
+      keepAliveInitialDelay: 10000,
       timezone: 'local',
       charset: 'utf8mb4',
+      ssl: {
+        rejectUnauthorized: false // <-- ¡Esto es lo que falta para evitar que Railway cierre el canal!
+      }
     });
     
     console.log("✅ Pool de conexiones MySQL creado");
