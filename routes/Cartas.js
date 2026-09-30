@@ -4,7 +4,7 @@ import path from "path";
 import multer from "multer";
 import { pdf } from "pdf-to-img";
 import fs from "fs";
-import sharp from "sharp"; // 👈 Importamos sharp para convertir a webp
+import sharp from "sharp"; // 👈 Importado para optimizar y convertir a WebP
 
 const router = express.Router();
 const __dirname = path.resolve();
@@ -20,7 +20,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Función para limpiar únicamente los archivos del punto específico (ahora buscando .webp)
+// Función para limpiar únicamente los archivos WebP del punto específico que se está actualizando/borrando
 const limpiarArchivosPunto = (punto_id, pdfAnterior = null) => {
   if (pdfAnterior) {
     const rutaPdf = path.join(__dirname, "public/cartas", pdfAnterior);
@@ -33,7 +33,7 @@ const limpiarArchivosPunto = (punto_id, pdfAnterior = null) => {
   if (fs.existsSync(dir)) {
     const archivos = fs.readdirSync(dir);
     archivos.forEach(archivo => {
-      // Borra exclusivamente los webps que pertenecen a este punto_id
+      // Borra exclusivamente los webp que pertenecen a este punto_id
       if (archivo.startsWith(`p${punto_id}_pag_`) && archivo.endsWith(".webp")) {
         try { fs.unlinkSync(path.join(dir, archivo)); } catch (e) {}
       }
@@ -41,7 +41,7 @@ const limpiarArchivosPunto = (punto_id, pdfAnterior = null) => {
   }
 };
 
-// 1. Obtener cartas para el Administrador
+// 1. Obtener cartas para el Administrador (Muestra el PDF original)
 router.get("/obtener_Cartas", async (req, res) => {
   try {
     const db = await connectDb();
@@ -52,7 +52,7 @@ router.get("/obtener_Cartas", async (req, res) => {
   }
 });
 
-// 2. Obtener cartas para la Página Pública (HTMLFlipBook) - Lee los WebPs generados
+// 2. Obtener cartas para la Página Pública (HTMLFlipBook) - Lee los WebPs ya generados sin duplicar
 router.get("/obtener_Cartas_Punto/:punto_id", async (req, res) => {
   const { punto_id } = req.params;
 
@@ -94,7 +94,7 @@ router.get("/obtener_Cartas_Punto/:punto_id", async (req, res) => {
   }
 });
 
-// 3. Crear o Reemplazar carta (Convierte el PDF directamente a WebP)
+// 3. Crear o Reemplazar carta (Sube el PDF, borra los WebPs viejos y crea los nuevos de forma ultrarrápida y en paralelo)
 router.post("/crear_Cartas", upload.single("imagen"), async (req, res) => {
   const { punto_id } = req.body;
   const archivoSubido = req.file?.filename;
@@ -107,7 +107,7 @@ router.post("/crear_Cartas", upload.single("imagen"), async (req, res) => {
     const db = await connectDb();
     const puntoIdNum = parseInt(punto_id);
     
-    // 1. Buscamos si ya existía una carta previa para limpiar archivos anteriores
+    // 1. Buscamos si ya existía una carta previa para limpiar sus archivos anteriores
     const [rowsExistentes] = await db.execute("CALL obtenerCartasPorPunto(?)", [puntoIdNum]);
     if (rowsExistentes && rowsExistentes[0] && rowsExistentes[0].length > 0) {
       for (let cartaVieja of rowsExistentes[0]) {
@@ -118,31 +118,39 @@ router.post("/crear_Cartas", upload.single("imagen"), async (req, res) => {
 
     const rutaPdfAbsoluta = path.join(__dirname, "public/cartas", archivoSubido);
 
-    // 2. Convertimos el PDF a imágenes WebP usando Sharp
+    // 2. Convertimos el PDF a WebP de forma optimizada y en paralelo (Ultra rápido)
     if (fs.existsSync(rutaPdfAbsoluta)) {
-      console.log(`🚀 Generando páginas WebP para el flipbook del punto ${puntoIdNum}...`);
+      console.log(`🚀 Generando páginas WebP optimizadas para el punto ${puntoIdNum}...`);
       try {
-        const document = await pdf(rutaPdfAbsoluta, { scale: 2 });
+        // Escala 1.5 para mantener excelente nitidez web reduciendo el peso de procesamiento
+        const document = await pdf(rutaPdfAbsoluta, { scale: 1.5 });
         let pageNum = 1;
+        const promesasPaginas = [];
 
         for await (const image of document) {
-          const nombrePagina = `p${puntoIdNum}_pag_${pageNum}.webp`;
+          const currentNum = pageNum;
+          const nombrePagina = `p${puntoIdNum}_pag_${currentNum}.webp`;
           const rutaImagenFinal = path.join(__dirname, "public/cartas", nombrePagina);
           
-          // Convertimos el buffer de la imagen del PDF a WebP con calidad 85
-          await sharp(image)
-            .webp({ quality: 85 })
+          // Creamos la promesa de conversión con sharp para cada página
+          const promesaConversion = sharp(image)
+            .webp({ quality: 75 }) // Calidad alta y peso liviano
             .toFile(rutaImagenFinal);
 
+          promesasPaginas.push(promesaConversion);
           pageNum++;
         }
+
+        // Ejecutamos todas las conversiones al mismo tiempo (Paralelo)
+        await Promise.all(promesasPaginas);
+
         console.log(`✅ Páginas WebP generadas con éxito para el punto ${puntoIdNum}`);
       } catch (convError) {
         console.error("❌ Error convirtiendo PDF a WebP:", convError);
       }
     }
 
-    // 3. Guardamos el nombre del PDF en la base de datos
+    // 3. Guardamos el registro en la base de datos
     await db.execute("CALL insertarCarta(?,?)", [puntoIdNum, archivoSubido]);
 
     res.status(201).json({ succes: true, message: "Carta subida y convertida a WebP con éxito" });
