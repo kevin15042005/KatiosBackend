@@ -1,50 +1,74 @@
 import express from "express";
 import connectDb from "../db.js";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
 const router = express.Router();
 
+const regexContrasena = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
 
-//Ingreso de usuario 
+router.post("/entrada_usuario", async (req, res) => {
+  const { nombre, contrasena } = req.body;
 
-router.post("/entrada_usuario",async (req,res)=>{
-  const {nombre,contrasena} = req.body
+  if (!nombre || !contrasena) {
+    return res.status(400).json({
+      succes: false, 
+      message: "Todos los campos son requeridos para el ingreso"
+    });
+  }
 
-if(!nombre||!contrasena) {
-  return res.status(400).json({
-    succes:false, 
-    message:"Todos los campos son requeridos para el ingreso"
-  })
-}
-try {
-  
-const db = await connectDb();
-const [rows] = await db.execute("CALL entradaUsuario(?,?)",[nombre,contrasena])
+  try {
+    const db = await connectDb();
+    const [rows] = await db.execute("CALL entradaUsuario(?)", [nombre]);
 
-if(rows[0].length ===0){
-  return res.status(401).json({
-    succes:false,
-    message:"Usuario o contrasena incorrecta"
-  })
-}
+    if (rows[0].length === 0) {
+      return res.status(401).json({
+        succes: false,
+        message: "Usuario o contraseña incorrecta"
+      });
+    }
 
-res.status(200).json({
-  succes:true,
-  message:"Ingreso correcto",
-  usuario:rows[0][0]
-})
+    const usuario = rows[0][0];
+    
+    const passwordMatch = await bcrypt.compare(contrasena, usuario.contrasena);
 
-} catch (error) {
-  res.status(500).json({
-    succes:false,
-    message:"Erro al iniciar sesion",
-    error:error.message
-  })
-}
+    if (!passwordMatch) {
+      return res.status(400).json({
+        succes: false,
+        message: "Usuario o contraseña incorrecta"
+      });
+    }
 
-})
+    const payload = {
+      id: usuario.id,
+      nombre: usuario.nombre,
+      es_admin: usuario.es_admin
+    };
 
+    const token = jwt.sign(payload, process.env.JWT_SECRETO || 'clave_secreta_temporal', {
+      expiresIn: '4h'
+    });
 
-//Obtener Usuario
+    return res.status(200).json({
+      succes: true,
+      message: "Ingreso correcto",
+      token: token,
+      usuario: {
+        id: usuario.id,
+        nombre: usuario.nombre,
+        es_admin: usuario.es_admin
+      }
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      succes: false,
+      message: "Error al iniciar sesion",
+      error: error.message
+    });
+  }
+});
+
 router.get("/obtener_usuario", async (req, res) => {
   try {
     const db = await connectDb();
@@ -53,36 +77,46 @@ router.get("/obtener_usuario", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       succes: false,
-      message: "Error al obetner ususario",
+      message: "Error al obtener usuario",
       error: error.message,
     });
   }
 });
 
-//Crear  Usuario
-
 router.post("/crear_usuario", async (req, res) => {
-  const { nombre, pin,contrasena,es_admin  } = req.body;
+  const { nombre, pin, contrasena, es_admin } = req.body;
 
-  if (!nombre ||!pin  ||!contrasena ) {
+  if (!nombre || !pin || !contrasena) {
     return res.status(400).json({
       succes: false,
       message: "Todos los campos son obligatorios",
     });
   }
 
-  if (typeof pin !== "number" || pin < 1000  || pin > 9999) {
+  if (typeof pin !== "number" || pin < 1000 || pin > 9999) {
     return res.status(400).json({
       succes: false,
-      message: " pin debe tener 4 digitos",
+      message: "El pin debe tener 4 digitos",
     });
   }
+
+  if (!regexContrasena.test(contrasena)) {
+    return res.status(400).json({
+      succes: false,
+      message: "La contraseña debe tener mínimo 8 caracteres, incluir una mayúscula, una minúscula, un número y un carácter especial (ej: Kevin12*)",
+    });
+  }
+
   try {
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
+
     const db = await connectDb();
-    await db.execute("CALL crearUsuario(?,?,?,?)", [nombre, pin, contrasena,es_admin]);
+    await db.execute("CALL crearUsuario(?,?,?,?)", [nombre, pin, hashedPassword, es_admin]);
+    
     res.json({
       succes: true,
-      message: "Creacion de ususario correcto",
+      message: "Creacion de usuario correcto",
     });
   } catch (error) {
     if (error.code === "ER_DUP_ENTRY") {
@@ -94,30 +128,37 @@ router.post("/crear_usuario", async (req, res) => {
 
     res.status(500).json({
       succes: false,
-      message: "Error al crear ceunta ususario",
+      message: "Error al crear cuenta usuario",
       error: error.message,
     });
   }
 });
-
-//Actualizar contrasena
 
 router.put("/actualizar_ususario", async (req, res) => {
   const { nombre, pin, nueva_contrasena } = req.body;
   if (!nombre || !pin || !nueva_contrasena) {
     return res.status(400).json({
       succes: false,
-      message: "Se requiere todo los campos",
+      message: "Se requieren todos los campos",
+    });
+  }
+
+  if (!regexContrasena.test(nueva_contrasena)) {
+    return res.status(400).json({
+      succes: false,
+      message: "La nueva contraseña debe tener mínimo 8 caracteres, incluir una mayúscula, una minúscula, un número y un carácter especial (ej: Kevin12*)",
     });
   }
 
   try {
-    const db = await connectDb();
+    const saltRounds = 10;
+    const hashedNewPassword = await bcrypt.hash(nueva_contrasena, saltRounds);
 
-    const [validar] = await db.execute("CALL actualizarUsuario(?,?,?)", [
+    const db = await connectDb();
+    await db.execute("CALL actualizarUsuario(?,?,?)", [
       nombre,
       pin,
-      nueva_contrasena,
+      hashedNewPassword,
     ]);
 
     res.status(201).json({
@@ -127,13 +168,11 @@ router.put("/actualizar_ususario", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       succes: false,
-      message: "Error al actualiar contradena",
+      message: "Error al actualizar contrasena",
       error: error.message,
     });
   }
 });
-
-//Eliminar ususario
 
 router.delete("/eliminar_usuario/:id", async (req, res) => {
   const { id } = req.params;
@@ -149,9 +188,10 @@ router.delete("/eliminar_usuario/:id", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       succes: false,
-      message: "Error al eliminar ususario",
+      message: "Error al eliminar usuario",
       error: error.message,
     });
   }
 });
+
 export default router;
