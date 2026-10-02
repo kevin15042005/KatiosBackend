@@ -30,7 +30,17 @@ router.post("/entrada_usuario", async (req, res) => {
 
     const usuario = rows[0][0];
     
-    const passwordMatch = await bcrypt.compare(contrasena, usuario.contrasena);
+    // Validación flexible: intenta comparar con bcrypt, y si falla o es texto plano, comprueba texto plano
+    let passwordMatch = false;
+    try {
+      passwordMatch = await bcrypt.compare(contrasena, usuario.contrasena);
+    } catch (e) {
+      passwordMatch = false;
+    }
+
+    if (!passwordMatch && contrasena === usuario.contrasena) {
+      passwordMatch = true;
+    }
 
     if (!passwordMatch) {
       return res.status(400).json({
