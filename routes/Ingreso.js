@@ -41,7 +41,7 @@ router.post("/entrada_usuario", async (req, res) => {
 
     const payload = {
       id: usuario.id,
-      nombre: usuario.nombre,
+      nombre: usuario.nombre_usuario,
       es_admin: usuario.es_admin
     };
 
@@ -55,7 +55,7 @@ router.post("/entrada_usuario", async (req, res) => {
       token: token,
       usuario: {
         id: usuario.id,
-        nombre: usuario.nombre,
+        nombre: usuario.nombre_usuario,
         es_admin: usuario.es_admin
       }
     });
