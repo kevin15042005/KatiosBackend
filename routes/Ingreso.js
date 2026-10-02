@@ -143,8 +143,7 @@ router.post("/crear_usuario", async (req, res) => {
     });
   }
 });
-
-router.put("/actualizar_ususario", async (req, res) => {
+router.put("/actualizar_usuario", async (req, res) => {
   const { nombre, pin, nueva_contrasena } = req.body;
   if (!nombre || !pin || !nueva_contrasena) {
     return res.status(400).json({
