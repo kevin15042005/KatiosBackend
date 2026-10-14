@@ -4,13 +4,16 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+// trim() quita espacios o saltos de línea invisibles que se cuelan al pegar variables en Render
+const env = (nombre) => process.env[nombre]?.trim();
+
 // El pool toma y libera las conexiones automáticamente en cada pool.execute()
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+  host: env("DB_HOST"),
+  port: Number(env("DB_PORT")),
+  user: env("DB_USER"),
+  password: env("DB_PASSWORD"),
+  database: env("DB_NAME"),
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,

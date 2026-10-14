@@ -179,14 +179,30 @@ router.put("/actualizar_usuario", limiteIntentos, async (req, res) => {
     });
   }
 
+  const pinNum = Number(pin);
+  if (!Number.isInteger(pinNum) || pinNum < 1000 || pinNum > 9999) {
+    return res.status(400).json({
+      succes: false,
+      message: "El pin debe tener 4 digitos",
+    });
+  }
+
   try {
     const hashedNewPassword = await bcrypt.hash(nueva_contrasena, 10);
 
-    await pool.execute("CALL actualizarUsuario(?,?,?)", [
+    const [resultado] = await pool.execute("CALL actualizarUsuario(?,?,?)", [
       nombre,
-      Number(pin),
+      pinNum,
       hashedNewPassword,
     ]);
+
+    // Si no coincidió ningún usuario con ese nombre y PIN, no se cambió nada
+    if (resultado.affectedRows === 0) {
+      return res.status(400).json({
+        succes: false,
+        message: "Nombre o PIN incorrecto",
+      });
+    }
 
     res.status(201).json({
       succes: true,
