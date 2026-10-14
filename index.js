@@ -7,22 +7,44 @@ import path from "path"
 import { fileURLToPath } from "url"
 
 dotenv.config()
+
+if (!process.env.JWT_SECRETO) {
+    throw new Error("Falta JWT_SECRETO en las variables de entorno")
+}
+
 const app = express()
 
+// Render funciona detrás de un proxy; necesario para que el límite de intentos vea la IP real
+app.set("trust proxy", 1)
 
-app.use(cors())
-app.use(express.json())
+// FRONTEND_URL admite varios dominios separados por coma.
+// Si no está definida se permite cualquier origen (comportamiento anterior).
+const origenesPermitidos = process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(",").map((o) => o.trim())
+    : null
+
+if (!origenesPermitidos) {
+    console.warn("⚠️ FRONTEND_URL no está definida: CORS acepta cualquier origen")
+}
+
+app.use(cors({ origin: origenesPermitidos ?? true }))
+app.use(express.json({ limit: "100kb" }))
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use("/cartas", express.static(path.join(__dirname, "public/cartas")));
-app.use("/imagenes", express.static("public/cartas"))
 
 app.use("/usuario", usuario)
-app.use("/cartas",cartas)
+app.use("/cartas", cartas)
 
-const PORT = process.env.PORT
+// Errores no controlados: se registran en el servidor, el cliente solo ve un mensaje genérico
+app.use((err, req, res, next) => {
+    console.error("❌ Error no controlado:", err)
+    res.status(err.status || 500).json({ succes: false, message: "Error interno del servidor" })
+})
 
-app.listen(PORT,()=>{
-    console.log(`Servidro corriendo en el puerto ${PORT}`)
+const PORT = process.env.PORT || 4000
+
+app.listen(PORT, () => {
+    console.log(`Servidor corriendo en el puerto ${PORT}`)
 })

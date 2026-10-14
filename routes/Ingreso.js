@@ -1,109 +1,127 @@
 import express from "express";
-import connectDb from "../db.js";
+import pool from "../db.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import rateLimit from "express-rate-limit";
+import { verificarToken, soloAdmin } from "../middleware/auth.js";
 
 const router = express.Router();
 
 const regexContrasena = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
 
-router.post("/entrada_usuario", async (req, res) => {
+// Máximo 5 intentos cada 15 minutos por IP (evita adivinar contraseñas o PINs)
+const limiteIntentos = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  skipSuccessfulRequests: true, // solo cuentan los intentos fallidos
+  message: {
+    succes: false,
+    message: "Demasiados intentos. Espere 15 minutos e intente de nuevo",
+  },
+});
+
+const esIdValido = (valor) => Number.isInteger(Number(valor)) && Number(valor) > 0;
+
+router.post("/entrada_usuario", limiteIntentos, async (req, res) => {
   const { nombre, contrasena } = req.body;
 
-  if (!nombre || !contrasena) {
+  if (typeof nombre !== "string" || typeof contrasena !== "string" || !nombre || !contrasena) {
     return res.status(400).json({
-      succes: false, 
-      message: "Todos los campos son requeridos para el ingreso"
+      succes: false,
+      message: "Todos los campos son requeridos para el ingreso",
     });
   }
 
   try {
-    const db = await connectDb();
-    const [rows] = await db.execute("CALL entradaUsuario(?)", [nombre]);
+    const [rows] = await pool.execute("CALL entradaUsuario(?)", [nombre]);
+    const usuario = rows[0]?.[0];
 
-    if (rows[0].length === 0) {
-      return res.status(401).json({
-        succes: false,
-        message: "Usuario o contraseña incorrecta"
-      });
-    }
-
-    const usuario = rows[0][0];
-    
-    // Validación flexible: intenta comparar con bcrypt, y si falla o es texto plano, comprueba texto plano
     let passwordMatch = false;
-    try {
-      passwordMatch = await bcrypt.compare(contrasena, usuario.contrasena);
-    } catch (e) {
-      passwordMatch = false;
-    }
 
-    if (!passwordMatch && contrasena === usuario.contrasena) {
-      passwordMatch = true;
+    if (usuario) {
+      const estaCifrada = typeof usuario.contrasena === "string" && usuario.contrasena.startsWith("$2");
+
+      if (estaCifrada) {
+        passwordMatch = await bcrypt.compare(contrasena, usuario.contrasena);
+      } else if (contrasena === usuario.contrasena) {
+        // Usuario antiguo con contraseña sin cifrar: se cifra ahora mismo
+        passwordMatch = true;
+        const hash = await bcrypt.hash(contrasena, 10);
+        await pool.execute("UPDATE usuario SET contrasena = ? WHERE id = ?", [hash, usuario.id]);
+      }
     }
 
     if (!passwordMatch) {
-      return res.status(400).json({
+      return res.status(401).json({
         succes: false,
-        message: "Usuario o contraseña incorrecta"
+        message: "Usuario o contraseña incorrecta",
       });
     }
 
     const payload = {
       id: usuario.id,
       nombre: usuario.nombre_usuario,
-      es_admin: usuario.es_admin
+      es_admin: usuario.es_admin,
     };
 
-    const token = jwt.sign(payload, process.env.JWT_SECRETO || 'clave_secreta_temporal', {
-      expiresIn: '4h'
+    const token = jwt.sign(payload, process.env.JWT_SECRETO, {
+      expiresIn: "4h",
     });
 
     return res.status(200).json({
       succes: true,
       message: "Ingreso correcto",
       token: token,
-      usuario: {
-        id: usuario.id,
-        nombre: usuario.nombre_usuario,
-        es_admin: usuario.es_admin
-      }
+      usuario: payload,
     });
-
   } catch (error) {
+    console.error("❌ ERROR EN /entrada_usuario:", error);
     return res.status(500).json({
       succes: false,
       message: "Error al iniciar sesion",
-      error: error.message
     });
   }
 });
 
-router.get("/obtener_usuario", async (req, res) => {
+router.get("/obtener_usuario", verificarToken, soloAdmin, async (req, res) => {
   try {
-    const db = await connectDb();
-    const [rows] = await db.execute("CALL obtenerUsuarios()");
-    res.json(rows[0]);
+    const [rows] = await pool.execute("CALL obtenerUsuarios()");
+    // Nunca enviar contraseñas ni PINs al navegador
+    const usuarios = rows[0].map(({ id, nombre_usuario, es_admin }) => ({
+      id,
+      nombre_usuario,
+      es_admin,
+    }));
+    res.json(usuarios);
   } catch (error) {
+    console.error("❌ ERROR EN /obtener_usuario:", error);
     res.status(500).json({
       succes: false,
       message: "Error al obtener usuario",
-      error: error.message,
     });
   }
 });
 
-router.post("/crear_usuario", async (req, res) => {
+router.post("/crear_usuario", verificarToken, soloAdmin, async (req, res) => {
   const { nombre, pin, contrasena, es_admin } = req.body;
 
-  if (!nombre || !pin || !contrasena) {
+  if (typeof nombre !== "string" || !nombre.trim() || !pin || typeof contrasena !== "string" || !contrasena) {
     return res.status(400).json({
       succes: false,
       message: "Todos los campos son obligatorios",
     });
   }
 
-  if (typeof pin !== "number" || pin < 1000 || pin > 9999) {
+  if (nombre.trim().length > 50) {
+    return res.status(400).json({
+      succes: false,
+      message: "El nombre no puede tener más de 50 caracteres",
+    });
+  }
+
+  if (typeof pin !== "number" || !Number.isInteger(pin) || pin < 1000 || pin > 9999) {
     return res.status(400).json({
       succes: false,
       message: "El pin debe tener 4 digitos",
@@ -118,12 +136,11 @@ router.post("/crear_usuario", async (req, res) => {
   }
 
   try {
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
+    const hashedPassword = await bcrypt.hash(contrasena, 10);
+    const esAdmin = Number(es_admin) === 1 ? 1 : 0;
 
-    const db = await connectDb();
-    await db.execute("CALL crearUsuario(?,?,?,?)", [nombre, pin, hashedPassword, es_admin]);
-    
+    await pool.execute("CALL crearUsuario(?,?,?,?)", [nombre.trim(), pin, hashedPassword, esAdmin]);
+
     res.json({
       succes: true,
       message: "Creacion de usuario correcto",
@@ -136,16 +153,19 @@ router.post("/crear_usuario", async (req, res) => {
       });
     }
 
+    console.error("❌ ERROR EN /crear_usuario:", error);
     res.status(500).json({
       succes: false,
       message: "Error al crear cuenta usuario",
-      error: error.message,
     });
   }
 });
-router.put("/actualizar_usuario", async (req, res) => {
+
+// Pública: es la recuperación de contraseña con nombre + PIN
+router.put("/actualizar_usuario", limiteIntentos, async (req, res) => {
   const { nombre, pin, nueva_contrasena } = req.body;
-  if (!nombre || !pin || !nueva_contrasena) {
+
+  if (typeof nombre !== "string" || !nombre || !pin || typeof nueva_contrasena !== "string" || !nueva_contrasena) {
     return res.status(400).json({
       succes: false,
       message: "Se requieren todos los campos",
@@ -160,13 +180,11 @@ router.put("/actualizar_usuario", async (req, res) => {
   }
 
   try {
-    const saltRounds = 10;
-    const hashedNewPassword = await bcrypt.hash(nueva_contrasena, saltRounds);
+    const hashedNewPassword = await bcrypt.hash(nueva_contrasena, 10);
 
-    const db = await connectDb();
-    await db.execute("CALL actualizarUsuario(?,?,?)", [
+    await pool.execute("CALL actualizarUsuario(?,?,?)", [
       nombre,
-      pin,
+      Number(pin),
       hashedNewPassword,
     ]);
 
@@ -175,30 +193,40 @@ router.put("/actualizar_usuario", async (req, res) => {
       message: "Actualizacion contrasena correcta",
     });
   } catch (error) {
+    console.error("❌ ERROR EN /actualizar_usuario:", error);
     res.status(500).json({
       succes: false,
       message: "Error al actualizar contrasena",
-      error: error.message,
     });
   }
 });
 
-router.delete("/eliminar_usuario/:id", async (req, res) => {
+router.delete("/eliminar_usuario/:id", verificarToken, soloAdmin, async (req, res) => {
   const { id } = req.params;
 
-  try {
-    const db = await connectDb();
-    await db.execute("CALL eliminarUsuario(?)", [parseInt(id)]);
+  if (!esIdValido(id)) {
+    return res.status(400).json({ succes: false, message: "ID inválido" });
+  }
 
-    res.status(201).json({
+  if (Number(id) === Number(req.usuario.id)) {
+    return res.status(400).json({
+      succes: false,
+      message: "No puede eliminar su propio usuario",
+    });
+  }
+
+  try {
+    await pool.execute("CALL eliminarUsuario(?)", [Number(id)]);
+
+    res.status(200).json({
       succes: true,
       message: "Eliminacion de usuario correctamente",
     });
   } catch (error) {
+    console.error("❌ ERROR EN /eliminar_usuario:", error);
     res.status(500).json({
       succes: false,
       message: "Error al eliminar usuario",
-      error: error.message,
     });
   }
 });
